@@ -1,10 +1,18 @@
 import numpy as np
-import torch
 import sentencepiece as spm
+import torch
 from fairseq import checkpoint_utils, options, tasks, utils
 from fairseq.dataclass.utils import convert_namespace_to_omegaconf
-from omegaconf import DictConfig
+from flask import Flask, jsonify, request
 from langid import LangId
+from omegaconf import DictConfig
+from open_lark import OpenLark
+
+app = Flask(__name__)
+app_id = 'cli_9f0ce4677771500c'
+app_secret = 'ZSzR44EGfB3l1kWZluuFt8Ic4KqwmTss'
+encrypt_key = None
+verification_token = 'EcpG00O5Ee7HEOsZN3cvAdJOj4nGGxtF'
 
 
 class MultilingualTranslationServer(object):
@@ -82,9 +90,14 @@ class MultilingualTranslationServer(object):
         return hypo_str
 
     def translate(self, input_str):
+        input_str = input_str.strip()
         tgt_lang = input_str[: 2].lower()
         src_text = input_str[2:].strip()
         src_lang = self.lang_id(src_text)['lang_code']
+        if tgt_lang not in self.task.langs:
+            tgt_lang = 'en'
+        if src_lang not in self.task.langs:
+            src_lang = 'zh'
         tgt_text = self._translate(src_lang, tgt_lang, src_text)
         result = {'src_lang': src_lang,
                   'src_text': src_text,
@@ -94,18 +107,46 @@ class MultilingualTranslationServer(object):
         return tgt_text
 
 
-def main():
-    print('begin parsing')
-    parser = options.get_generation_parser()
-    print('parser ready')
-    args = options.parse_args_and_arch(parser)
-    print('args ready')
-    cfg = convert_namespace_to_omegaconf(args)
-    print('cfg ready')
-    server = MultilingualTranslationServer(cfg)
-    print(server._translate('en', 'zh', 'hello'))
-    print(server.translate('en 我是一个粉刷匠，粉刷本领强。'))
+parser = options.get_generation_parser()
+args = options.parse_args_and_arch(parser)
+cfg = convert_namespace_to_omegaconf(args)
+server = MultilingualTranslationServer(cfg)
+
+
+def handle_message(msg_uuid, msg_timestamp, event, json_event):
+    print(msg_uuid, msg_timestamp, json_event, "ssss")
+    open_message_id = json_event["open_message_id"]
+    open_chat_id = json_event["open_chat_id"]
+    ret_dict = {"open_message_id": open_message_id,
+                "open_chat_id": open_chat_id,
+                "reply": server.translate(json_event["text_without_at_bot"])}
+
+    return ret_dict
+
+
+@app.route("/bot", methods=["GET", "POST"])
+def index():
+    body = request.get_json()
+    bot = OpenLark(app_id=app_id,
+                   app_secret=app_secret,
+                   encrypt_key=encrypt_key,
+                   oauth_redirect_uri="10.100.196.196:5555",
+                   verification_token=verification_token)
+    ret = bot.handle_callback(body, handle_message)
+    if isinstance(ret, dict) and ("challenge" in ret):
+        print('1'*100)
+        return jsonify(ret)
+    else:
+        print('0'*100)
+        if "open_message_id" in ret:
+            open_message_id = ret["open_message_id"]
+            open_chat_id = ret["open_chat_id"]
+            msgid = bot.reply(open_message_id).to_open_chat_id(
+                open_chat_id).send_text(ret["reply"])
+            # bot.urgent_message(msgid, [zsj_open_id], urgent_type=UrgentType.sms)
+        return jsonify({"ok": True})
 
 
 if __name__ == '__main__':
-    main()
+    print(app.before_first_request_funcs)
+    app.run(host='0.0.0.0', port='5555')
